@@ -1,0 +1,186 @@
+name: Build dae binary (kdae)
+
+# 本分支只产出 dae 核心的静态二进制（CI artifact）：不再编译 apk、不再发 Release、不含 luci 包。
+# ⚠️ 文件名必须保持 build-apk.yml —— GitHub 要求 workflow 文件存在于**默认分支**才会出现在
+#    Actions 列表里并可 workflow_dispatch。本分支靠与 main「同路径」拿到手动触发入口：
+#    dispatch 时 ref 选 kdae，实际执行的就是本文件。改名会导致 kdae 无法手动触发。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kdae
+    paths:
+      # 只在真正影响二进制时触发。原先基于「上一次 Release note」的 Change guard 已移除：
+      # 本线不再发 Release，没有可比对的记录，用 paths 过滤更直接。
+      - 'dae/Makefile'
+      - '.github/workflows/build-apk.yml'
+
+# 同一 ref 只允许一个构建流程
+concurrency:
+  group: build-kdae-binary-${{ github.ref }}
+  cancel-in-progress: true
+
+# 默认收敛到最小权限，需要写权限的 job 单独提升（见 build-binary）
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    # 用默认 GITHUB_TOKEN 做的 push 不会触发其它 workflow（GitHub 递归保护）。
+    # 本分支没有自动 bump 工作流（update-dae.yml 已删除），这个门控只用于避免
+    # bot push 与手工 dispatch 双跑。
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      kdae_commit: ${{ steps.meta.outputs.kdae_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate version metadata
+        id: meta
+        shell: bash
+        run: |
+          pkg_version=$(grep '^PKG_VERSION:=' dae/Makefile | head -n 1 | cut -d= -f2)
+          pkg_release=$(grep '^PKG_RELEASE:=' dae/Makefile | head -n 1 | cut -d= -f2)
+          kdae_commit=$(grep '^KDAE_COMMIT:=' dae/Makefile | head -n 1 | cut -d= -f2)
+          if [ -z "$kdae_commit" ]; then
+            echo "::error::dae/Makefile 缺少 KDAE_COMMIT（上游 kdae 提交）"
+            exit 1
+          fi
+          # KDAE_COMMIT 必须是完整 40 位 sha：短 sha 不能当 fetch 的 refspec
+          case "$kdae_commit" in
+            *[!0-9a-f]*|"") echo "::error::KDAE_COMMIT 必须是完整 40 位十六进制 sha（当前='${kdae_commit}'）"; exit 1 ;;
+          esac
+          if [ "${#kdae_commit}" -ne 40 ]; then
+            echo "::error::KDAE_COMMIT 必须是完整 40 位 sha（当前长度 ${#kdae_commit}）"
+            exit 1
+          fi
+          version="${pkg_version}-r${pkg_release}"
+          echo "version=${version}"            >> "$GITHUB_OUTPUT"
+          echo "kdae_commit=${kdae_commit}"    >> "$GITHUB_OUTPUT"
+
+          echo "Version: ${version} / KDAE_COMMIT: ${kdae_commit}"
+
+  build-binary:
+    name: Build binary ${{ matrix.label }}
+    runs-on: ubuntu-22.04
+    needs: prepare
+    # 本 job 只上传 artifact（无 checkout），所以只需要 actions: write
+    permissions:
+      actions: write
+    env:
+      # 上游 make 的产物路径。Build 步骤写它、Stage 步骤读它，只在一处定义，
+      # 避免两边各写一份后改一处漏一处。
+      OUTPUT: /home/runner/work/dae-out
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: x86_64v3
+            goarch: amd64
+            goamd64: v3
+          - label: aarch64
+            goarch: arm64
+    steps:
+      - name: Install toolchain
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get install -y --no-install-recommends clang-15 llvm-15
+
+
+      - name: Fetch kdae source
+        env:
+          KDAE_COMMIT: ${{ needs.prepare.outputs.kdae_commit }}
+        run: |
+          set -euo pipefail
+          # 必须落到 dae/Makefile 里记录的 KDAE_COMMIT：只 clone 分支 tip 的话，
+          # 同一份 Makefile 在不同时间会编译出不同二进制（构建不可复现）
+          # 必须是完整 40 位 sha：短 sha 不能当 fetch 的 refspec（git fetch origin 4502be7
+          # -> couldn't find remote ref），会在 set -e 下直接挂掉构建
+          case "$KDAE_COMMIT" in
+            *[!0-9a-f]*|"") echo "::error::KDAE_COMMIT 必须是完整 40 位十六进制 sha（当前='${KDAE_COMMIT}'）"; exit 1 ;;
+          esac
+          [ "${#KDAE_COMMIT}" -eq 40 ] || { echo "::error::KDAE_COMMIT 必须是完整 40 位 sha（当前长度 ${#KDAE_COMMIT}）"; exit 1; }
+          git clone --depth 1 --branch kdae https://github.com/olicesx/dae.git src
+          # shallow clone 里没有目标 commit，需单独 fetch 该 commit 后再 checkout
+          git -C src fetch --depth 1 origin "$KDAE_COMMIT"
+          git -C src checkout --detach "$KDAE_COMMIT"
+          echo "checked out: $(git -C src rev-parse HEAD)"
+          git -C src submodule update --init --recursive
+
+      # setup-go 必须排在 clone 之后：缓存 restore 用 cache-dependency-path 算 key，
+      # 而 kdae 源码是运行时 clone 到 src/ 的（仓库根没有 go.mod），放在前面则每次都
+      # 算不出 key → 缓存永远 miss → 每次全量下载依赖（CI 日志实测有
+      # "Restore cache failed: Dependencies file is not found ... Supported file pattern: go.mod"）。
+      # 顺带 setup-go 的缓存还含 ~/.cache/go-build，编译缓存也一并受益。
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: |
+            src/go.sum
+            src/**/go.sum
+
+      - name: Build dae
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          CGO_ENABLED: '0'
+          GOFLAGS: -trimpath -modcacherw
+          # 该变量由上游 Makefile 单一持有（DEFAULT_GOEXPERIMENT）。上游
+          # scripts/check-build-env.sh 用 git grep 拒绝 .github/ 与 Dockerfile 里
+          # 任何对它赋值的写法（连注释里的字面量也会命中），所以此处既不声明也不
+          # 覆盖：make 会把 DEFAULT_GOEXPERIMENT 合并进其内部变量并自动导出，
+          # 使构建结果与 `make -s print-goexperiment` 保持一致。
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CLANG: clang-15
+          STRIP: llvm-strip-15
+        run: |
+          set -euo pipefail
+          cd src
+          # 拉模块偶发传输中断（实测 `stream error: stream ID N; INTERNAL_ERROR; received
+          # from peer`），Go 自带的请求级重试对这类流中断不够用，这里外层重跑 make。
+          ok=0
+          for i in 1 2 3; do
+            if make; then ok=1; break; fi
+            echo "::warning::make 失败（第 $i/3 次），10 秒后重试"
+            # 清掉上次的产物，避免 make 按时间戳判定"已最新"而跳过重编、把半成品上传。
+            # ⚠️ 不能写 `rm -rf "$OUTPUT"/*` —— 实测 $OUTPUT 是**文件**（.../dae-out），
+            # 通配符不展开，rm -f 对不存在的路径静默返回 0，等于什么都没清。
+            if [ -d "$OUTPUT" ]; then
+              rm -rf "${OUTPUT:?}"/*
+            else
+              rm -f "${OUTPUT:?}"
+            fi
+            sleep 10
+          done
+          [ "$ok" -eq 1 ] || { echo "::error::make 连续 3 次失败"; exit 1; }
+          ls -lh "$OUTPUT"
+
+      - name: Stage binary as "dae"
+        run: |
+          set -euo pipefail
+          # 上游 make 把产物写在 $OUTPUT，而 upload-artifact 用该路径的 **basename**
+          # 作为包内文件名 —— 于是 artifact 里的文件会叫 "dae-out"，使用者下载后
+          # 还得自己改名才能用。这里复制一份规范文件名再上传（原文件保持不动）。
+          [ -f "$OUTPUT" ] || { echo "::error::未找到构建产物 $OUTPUT"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/artifact"
+          install -m 755 "$OUTPUT" "$RUNNER_TEMP/artifact/dae"
+          ls -lh "$RUNNER_TEMP/artifact"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dae-${{ matrix.label }}
+          # 上传暂存目录（内含 dae），而非上游产物路径 —— 保证 artifact 内文件名是 dae
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: error
+          # 本线不再发 Release，二进制只靠 artifact 交付 → 保留期给足，便于随时取用
+          retention-days: 30
+
