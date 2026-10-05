@@ -365,7 +365,8 @@ jobs:
       - name: Delete old workflow runs
         # 只清理 workflow run 记录（delete_releases 用默认值 false），
         # Release / tag 的清理已由上一步按前缀自行处理
-        uses: ophub/delete-releases-workflows@f5873e66feb0a85460d7fbc073de6c89470e94d3 # main (2026-06-17；该 commit 无对应 tag，v0.1.0 更早)
+        # pin main 的具体 commit：上游没有对应 tag；Dependabot 每周前移 SHA，行尾不留注释
+        uses: ophub/delete-releases-workflows@f5873e66feb0a85460d7fbc073de6c89470e94d3
         with:
           delete_releases: false
           delete_tags: false
