@@ -11,7 +11,7 @@ PKG_RELEASE:=1
 # .github/workflows/build-apk.yml 下载，所以校验也放在那里，变量名按 arch 区分）。
 # PLACEHOLDER_* 表示尚未回填：此时 workflow 会跳过校验并在日志里打出
 # “实际 sha256 = ...”，把它填回这里即可；上游换 tag 后需要重新回填。
-DAE_HASH_X86_64:=739e22572ca9ea14c1090c88ad2c54054efcc23d6b341ebbb576b04072382f5c
+DAE_HASH_X86_64:=3e6340288d3fdc61f57eb8d4be89201aa32a9e1bc303dc005b37eb64b576ef52
 DAE_HASH_AARCH64:=6580029b78c7c07a9b3cff5f893701a3a3e46b99a7df68306a93b47a5c976e74
 
 PKG_LICENSE:=AGPL-3.0-only

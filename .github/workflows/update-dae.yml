@@ -48,6 +48,22 @@ jobs:
             sed -i "s/^DAE_RELEASE:=.*/DAE_RELEASE:=${tag}/" dae/Makefile
             sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${ver}/" dae/Makefile
             sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${next_rel}/" dae/Makefile
+
+            # 换 tag 必须重算预编译资产的 sha256，否则构建会在校验处失败。
+            # 用 release 资产的 digest（GitHub 侧已算好），不必下载 20+ MB；取不到就写
+            # PLACEHOLDER_*，构建侧会跳过校验并打印实际值，供手工回填。
+            # 资产名须与 build-apk.yml 的 matrix.asset 保持一致。
+            fill_hash() {
+              _var="$1"; _asset="$2"; _d=""
+              _d="$(gh api "repos/daeuniverse/dae/releases/tags/${tag}" \
+                      --jq ".assets[] | select(.name == \"${_asset}\") | .digest // \"\"" 2>/dev/null | head -n 1)"
+              _d="${_d#sha256:}"
+              [ "${#_d}" -eq 64 ] || _d="PLACEHOLDER_$(echo "$_var" | sed 's/^DAE_HASH_//' | tr 'A-Z' 'a-z')"
+              sed -i "s|^${_var}:=.*|${_var}:=${_d}|" dae/Makefile
+              echo "  ${_var} = ${_d}"
+            }
+            fill_hash DAE_HASH_X86_64  dae-linux-x86_64_v3_avx2.tar.xz
+            fill_hash DAE_HASH_AARCH64 dae-linux-arm64.tar.xz
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
