@@ -119,7 +119,7 @@ jobs:
       # 算不出 key → 缓存永远 miss → 每次全量下载依赖（CI 日志实测有
       # "Restore cache failed: Dependencies file is not found ... Supported file pattern: go.mod"）。
       # 顺带 setup-go 的缓存还含 ~/.cache/go-build，编译缓存也一并受益。
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.26'
           cache-dependency-path: |
