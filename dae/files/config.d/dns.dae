@@ -8,12 +8,12 @@ dns {
         ddns.example.org: 60
     }
     upstream {
-        cn_53: 'udp://dns.alidns.com:53'
-        ww_53: 'tcp+udp://dns.google:53'
-        cn_h2: 'https://dns.alidns.com:443/dns-query'
-        ww_h2: 'https://dns.google:443/dns-query'
-        cn_h3: 'h3://dns.alidns.com:443/dns-query'
-        ww_h3: 'h3://dns.google:443/dns-query'
+        cn_53: 'udp://dns.alidns.com'
+        ww_53: 'tcp+udp://dns.google'
+        cn_h2: 'https://dns.alidns.com'
+        ww_h2: 'https://dns.google'
+        cn_h3: 'h3://dns.alidns.com'
+        ww_h3: 'h3://dns.google'
     }
     routing {
         request {
